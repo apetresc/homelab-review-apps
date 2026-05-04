@@ -108,12 +108,15 @@ See the eastbridge-rps repo for reference implementations.
 Tag releases as `v1`, `v1.1`, etc. Callers pin to `@v1` (auto-pulls minor
 updates) or to a specific tag. Breaking changes bump the major.
 
-## Private-repo note
+## Visibility
 
-If this repo is private, GitHub requires:
+This repo is public. Public reusable workflows can be called by any repo
+on GitHub.com, regardless of owner — which is the whole point here, since
+consumers span personal-account repos (`apetresc/...`) and organization
+repos (`eastbridge-academy/...`) and GitHub's private-repo sharing model
+doesn't span owners on personal accounts.
 
-- Settings → Actions → General → "Access" → "Accessible from repositories
-  owned by the user 'apetresc'" — without this, callers' `uses:` line 404s.
-
-The reusable workflow runs under the *caller* repo's `GITHUB_TOKEN`, so no
-PAT or installation token is needed.
+Nothing in these workflows is secret: no tokens, no keys, no proprietary
+logic. Secrets (GHCR auth, etc.) are inherited from the *caller's* repo
+at runtime via `secrets: inherit` and never appear here. The reusable
+workflow runs under the caller repo's `GITHUB_TOKEN`.
