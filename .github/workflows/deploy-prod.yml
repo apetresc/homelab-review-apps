@@ -1,0 +1,150 @@
+name: Deploy Prod (reusable)
+
+# Reusable workflow that builds and deploys a project to its homelab Swarm.
+#
+# Two-job pattern:
+#   build  — runs on ubuntu-latest, builds each image in parallel via matrix,
+#            pushes to GHCR with tags ${sha} and `latest`. Skipped on rollback.
+#   deploy — runs on a self-hosted runner co-located with the Swarm manager,
+#            invokes the project's bin/deploy-prod script with the image tag.
+#
+# Rollback: invoke this workflow via workflow_dispatch with `tag` set to a
+# previous SHA; the build job is skipped and deploy runs against that tag.
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: Short identifier for the project (used in notifications).
+        type: string
+        required: true
+      images:
+        description: |
+          JSON array of objects describing each image to build:
+          [{"name":"eastbridge-rps-api","dockerfile":"docker/Dockerfile.app","target":"api"}, ...]
+          Image is pushed as ghcr.io/${repository_owner}/${name}:{sha,latest}.
+        type: string
+        required: true
+      deploy_script:
+        description: Path to the script that performs the actual stack deploy, taking the image tag as argv[1].
+        type: string
+        default: bin/deploy-prod
+      health_url:
+        description: URL to curl after deploy. Must return JSON containing `"status":"ok"`.
+        type: string
+        required: true
+      tag:
+        description: |
+          Optional rollback tag. If non-empty, the build job is skipped and
+          the deploy uses this tag instead of github.sha.
+        type: string
+        default: ''
+      ntfy_topic:
+        description: ntfy topic to notify on deploy success/failure (empty disables).
+        type: string
+        default: ''
+      swarm_runner_labels:
+        description: JSON array of self-hosted runner labels for the Swarm manager.
+        type: string
+        default: '["self-hosted","archimedes","swarm"]'
+      build_platform:
+        description: Target platform for image builds.
+        type: string
+        default: linux/amd64
+
+jobs:
+  resolve-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.t.outputs.tag }}
+    steps:
+      - id: t
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: [resolve-tag]
+    if: inputs.tag == ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        image: ${{ fromJSON(inputs.images) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.image.dockerfile }}
+          target: ${{ matrix.image.target }}
+          platforms: ${{ inputs.build_platform }}
+          push: true
+          cache-from: type=gha,scope=${{ matrix.image.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.image.name }}:${{ needs.resolve-tag.outputs.tag }}
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.image.name }}:latest
+
+  deploy:
+    needs: [resolve-tag, build]
+    # Run if build succeeded OR if we're rolling back (build was skipped).
+    if: |
+      always() &&
+      needs.resolve-tag.result == 'success' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
+    runs-on: ${{ fromJSON(inputs.swarm_runner_labels) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: Run deploy script
+        run: ${{ inputs.deploy_script }} ${{ needs.resolve-tag.outputs.tag }}
+
+      - name: Smoke check
+        run: |
+          for i in 1 2 3 4 5 6; do
+            if curl -fsS "${{ inputs.health_url }}" | grep -q '"status":"ok"'; then
+              echo "Health check passed."
+              exit 0
+            fi
+            echo "Attempt ${i}: health not yet OK, retrying in 10s..."
+            sleep 10
+          done
+          echo "Health check failed after all attempts." >&2
+          exit 1
+
+      - name: Notify success
+        if: ${{ success() && inputs.ntfy_topic != '' }}
+        run: |
+          curl -fsS \
+            -H "Title: ${{ inputs.project }} prod deployed" \
+            -d "Tag ${{ needs.resolve-tag.outputs.tag }} is live." \
+            "https://ntfy.apetre.sc/${{ inputs.ntfy_topic }}" >/dev/null
+
+      - name: Notify failure
+        if: ${{ failure() && inputs.ntfy_topic != '' }}
+        run: |
+          curl -fsS \
+            -H "Title: ${{ inputs.project }} prod deploy FAILED" \
+            -H "Priority: high" \
+            -d "Tag ${{ needs.resolve-tag.outputs.tag }} did not deploy. Check workflow logs." \
+            "https://ntfy.apetre.sc/${{ inputs.ntfy_topic }}" >/dev/null

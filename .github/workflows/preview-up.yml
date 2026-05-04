@@ -1,0 +1,94 @@
+name: Preview Up (reusable)
+
+# Reusable workflow that brings up an ephemeral preview environment for a
+# pull request. The actual orchestration lives in a project-specific script
+# (default `bin/preview-up`) so this workflow is framework-agnostic — it
+# works for Vite, Django, Rails, etc., as long as the project provides the
+# script and a docker-compose preview file.
+#
+# The caller workflow is responsible for triggering on the right
+# pull_request events; this workflow trusts that condition.
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: Short identifier for the project (used in concurrency group keys).
+        type: string
+        required: true
+      domain_suffix:
+        description: Domain suffix (e.g. rps.eastbrid.ge); hostname becomes ${slug}.${domain_suffix}.
+        type: string
+        required: true
+      preview_script:
+        description: Path to the script that brings up a preview, relative to the repo root.
+        type: string
+        default: bin/preview-up
+      runner_labels:
+        description: JSON array of self-hosted runner labels.
+        type: string
+        default: '["self-hosted","macmini","orbstack"]'
+      ntfy_topic:
+        description: ntfy topic to post the preview URL to (empty disables notifications).
+        type: string
+        default: ''
+      sticky_comment_header:
+        description: Header used to identify the sticky PR comment (must be unique per project).
+        type: string
+        default: ''
+
+jobs:
+  preview:
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    concurrency:
+      group: ${{ inputs.project }}-preview-pr-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Compute slug, host, branch
+        id: vars
+        run: |
+          slug="pr-${{ github.event.pull_request.number }}"
+          host="${slug}.${{ inputs.domain_suffix }}"
+          branch="${{ github.event.pull_request.head.ref }}"
+          {
+            echo "slug=${slug}"
+            echo "host=${host}"
+            echo "branch=${branch}"
+            echo "url=https://${host}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout caller repo
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          submodules: true
+
+      - name: Run preview-up script
+        run: |
+          script="${{ inputs.preview_script }}"
+          slug="${{ steps.vars.outputs.slug }}"
+          branch="${{ steps.vars.outputs.branch }}"
+          ntfy_topic="${{ inputs.ntfy_topic }}"
+          if [ -n "${ntfy_topic}" ]; then
+            "${script}" "${slug}" --branch "${branch}" --ntfy-topic "${ntfy_topic}"
+          else
+            "${script}" "${slug}" --branch "${branch}"
+          fi
+
+      - name: Upsert sticky PR comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: ${{ inputs.sticky_comment_header || format('{0}-preview', inputs.project) }}
+          message: |
+            ## Preview environment ready
+
+            - **URL:** ${{ steps.vars.outputs.url }}
+            - **Slug:** `${{ steps.vars.outputs.slug }}`
+            - **Branch:** `${{ steps.vars.outputs.branch }}`
+            - **Commit:** `${{ github.event.pull_request.head.sha }}`
+
+            Pushing more commits to this PR auto-redeploys. Removing the
+            `preview` label or closing the PR tears it down.

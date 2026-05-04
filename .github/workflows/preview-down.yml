@@ -1,0 +1,73 @@
+name: Preview Down (reusable)
+
+# Reusable workflow that tears down a preview environment when a PR is
+# closed or its `preview` label is removed.
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: Short identifier for the project.
+        type: string
+        required: true
+      preview_script:
+        description: Path to the script that tears down a preview.
+        type: string
+        default: bin/preview-down
+      runner_labels:
+        description: JSON array of self-hosted runner labels.
+        type: string
+        default: '["self-hosted","macmini","orbstack"]'
+      ntfy_topic:
+        description: ntfy topic for teardown notifications (empty disables).
+        type: string
+        default: ''
+      sticky_comment_header:
+        description: Header used for the sticky PR comment.
+        type: string
+        default: ''
+
+jobs:
+  preview-down:
+    # Tear down on PR close (any reason) or when the preview label is removed.
+    if: |
+      github.event.action == 'closed' ||
+      (github.event.action == 'unlabeled' && github.event.label.name == 'preview')
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    concurrency:
+      group: ${{ inputs.project }}-preview-pr-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout caller repo
+        uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: Compute slug
+        id: vars
+        run: |
+          slug="pr-${{ github.event.pull_request.number }}"
+          echo "slug=${slug}" >> "$GITHUB_OUTPUT"
+
+      - name: Run preview-down script
+        run: |
+          script="${{ inputs.preview_script }}"
+          slug="${{ steps.vars.outputs.slug }}"
+          ntfy_topic="${{ inputs.ntfy_topic }}"
+          if [ -n "${ntfy_topic}" ]; then
+            "${script}" "${slug}" --ntfy-topic "${ntfy_topic}"
+          else
+            "${script}" "${slug}"
+          fi
+
+      - name: Update sticky PR comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: ${{ inputs.sticky_comment_header || format('{0}-preview', inputs.project) }}
+          message: |
+            ## Preview environment torn down
+
+            Slug `${{ steps.vars.outputs.slug }}` is no longer running.
