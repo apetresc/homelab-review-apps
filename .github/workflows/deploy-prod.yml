@@ -44,9 +44,13 @@ on:
         type: string
         default: ''
       swarm_runner_labels:
-        description: JSON array of self-hosted runner labels for the Swarm manager.
+        description: |
+          JSON array of self-hosted runner labels for the Swarm manager.
+          The runner must be on the actual Swarm manager node (not a worker)
+          since `docker stack deploy` only works there. Default labels match
+          what runners/install-swarm-manager.sh registers.
         type: string
-        default: '["self-hosted","archimedes","swarm"]'
+        default: '["self-hosted","swarm"]'
       build_platform:
         description: Target platform for image builds.
         type: string

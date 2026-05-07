@@ -1,0 +1,6 @@
+# The runner binary + working state lives at ~/actions-runner-${ORG}/, not
+# inside this directory. These ignores are belt-and-suspenders for cases
+# where the runner gets accidentally extracted in-tree.
+actions-runner-*/
+*.tar.gz
+.env

@@ -7,17 +7,22 @@ Framework-agnostic: each consuming project provides its own `bin/preview-up`,
 the workflows here orchestrate the GitHub side (PR labels, sticky comments,
 concurrency, ntfy notifications, rollback paths).
 
-This is private infrastructure, not a public action — it assumes:
+This is opinionated homelab infrastructure, not a general-purpose action —
+it assumes:
 
 - A self-hosted GitHub Actions runner labeled `self-hosted, macmini, orbstack`
-  on the Mac Mini that hosts the preview Compose stacks.
-- A self-hosted runner labeled `self-hosted, archimedes, swarm` on the Swarm
-  manager node for prod deploys.
-- A Traefik instance on the Mac Mini proxying the `edge` Docker network with
-  a wildcard mkcert cert covering the project's preview hostnames.
-- Tailscale split-DNS routing `*.<domain-suffix>` at the Mini's tailnet IP
-  via a `dnsmasq` instance on the `edge` network.
+  on the host that runs preview Compose stacks (Mac Mini in my case).
+- A self-hosted runner labeled `self-hosted, swarm` on the Swarm manager
+  for prod deploys (registered to the same owner as the caller repos).
+- A Traefik instance on the preview host proxying the `edge` Docker
+  network with a TLS cert covering the preview hostnames.
+- A wildcard public DNS record (e.g. R53 `*.<domain> CNAME`) pointing
+  preview hostnames at the preview host's tailnet/private IP. Outsiders
+  resolve the names but only tailnet-connected clients can reach them.
 - A self-hosted ntfy at `https://ntfy.apetre.sc` for notifications.
+
+See [`runners/`](./runners/) for bootstrap scripts that install the
+runners on the Mac Mini and the Swarm manager.
 
 ## Workflows
 
