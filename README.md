@@ -56,6 +56,12 @@ on:
 
 jobs:
   preview-down:
+    # Gate at the caller so unrelated label-edits don't spin up a
+    # workflow run just to skip. The reusable workflow has the same
+    # check internally as defense in depth.
+    if: |
+      github.event.action == 'closed' ||
+      (github.event.action == 'unlabeled' && github.event.label.name == 'preview')
     uses: apetresc/homelab-review-apps/.github/workflows/preview-down.yml@v1
     with:
       project: rps
